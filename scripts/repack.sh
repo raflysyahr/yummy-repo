@@ -10,7 +10,8 @@ SITE="${SITE:-$PWD/site}"
 OUT="$SITE/debs"
 
 repack() {
-  local deb="$1" name d f t n
+#  local deb="$1" name d f t n
+  local deb="$1" name d f t n cf tmp line
   name="$(basename "$deb" .deb)"
   d="$WORK/x/$name"
   rm -rf "$d"; mkdir -p "$d"
@@ -41,6 +42,24 @@ repack() {
     fi
   done < <(grep -rlaFZ "/data/data/$OLD" "$d" || true)
 
+    # 3b) conffiles: buang entri yang filenya tidak ada di pohon (dpkg-deb menolaknya)
+  cf="$d/DEBIAN/conffiles"
+  if [ -f "$cf" ]; then
+    tmp="$cf.new"; : > "$tmp"
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -z "$line" ]; then continue; fi
+      if [ -e "$d$line" ] || [ -L "$d$line" ]; then
+        printf '%s\n' "$line" >> "$tmp"
+      else
+        {
+          echo "[conffile dibuang] $name: $line"
+          dpkg-deb -c "$deb" | grep -F "$(basename "$(dirname "$line")")/$(basename "$line")" | head -3
+        } >> "$WORK/report.txt" || true
+      fi
+    done < "$cf"
+    mv "$tmp" "$cf"
+    if [ ! -s "$cf" ]; then rm -f "$cf"; fi
+  fi
   # 4) md5sums harus dihitung ulang
   if [ -f "$d/DEBIAN/md5sums" ]; then
     ( cd "$d" && find . -path ./DEBIAN -prune -o -type f -print0 \
