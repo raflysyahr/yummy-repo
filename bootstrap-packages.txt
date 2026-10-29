@@ -1,0 +1,31 @@
+# Paket inti bootstrap (dari scripts/build-bootstraps.sh di yummy-packages).
+# Dependensinya dikecualikan otomatis oleh resolve.py.
+apt
+bash
+bzip2
+coreutils
+dash
+diffutils
+findutils
+gawk
+grep
+gzip
+less
+procps
+psmisc
+sed
+tar
+termux-core
+termux-exec
+termux-keyring
+termux-tools
+util-linux
+ed
+debianutils
+dos2unix
+inetutils
+lsof
+nano
+net-tools
+patch
+unzip

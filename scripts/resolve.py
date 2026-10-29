@@ -21,6 +21,10 @@ def fetch(url):
 
 
 def load_index():
+    import os
+    if os.environ.get("INDEX_FILE"):
+        with open(os.environ["INDEX_FILE"]) as fh:
+            return fh.read()
     try:
         return fetch(INDEX).decode("utf-8")
     except Exception as e:  # coba versi .gz
@@ -88,7 +92,26 @@ def main():
             if p:
                 provides.setdefault(p, name)
 
+    def real_name0(n):
+        if n in pkgs:
+            return n
+        return provides.get(n)
+
+    # Semua paket bootstrap + dependensinya otomatis dikecualikan
     exclude = set(read_list("exclude.txt"))
+    bq = list(read_list("bootstrap-packages.txt"))
+    while bq:
+        n = bq.pop(0)
+        r = real_name0(n)
+        if r is None or r in exclude:
+            continue
+        exclude.add(r)
+        for alts in dep_groups(pkgs[r]):
+            for a in alts:
+                if real_name0(a):
+                    bq.append(a)
+                    break
+    warn("paket bootstrap yang dikecualikan: %d" % len(exclude))
     queue = list(read_list("packages.txt"))
     seen, result = set(), []
 
