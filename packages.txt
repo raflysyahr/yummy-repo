@@ -6,9 +6,11 @@ ripgrep
 fd
 jq
 nodejs-lts
+npm
 python
 python-pip
 php
 composer
 shellcheck
 shfmt
+
