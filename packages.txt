@@ -13,4 +13,4 @@ php
 composer
 shellcheck
 shfmt
-
+gnupg

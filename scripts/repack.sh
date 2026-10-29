@@ -88,6 +88,23 @@ repack() {
   rm -rf "$d"
 }
 
+sign_repo() {
+  # Tandatangani Release kalau secret GPG_PRIVATE_KEY tersedia (jalankan di folder site/)
+  if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+    echo "[!] GPG_PRIVATE_KEY tidak diset, repo TIDAK ditandatangani"
+    return 0
+  fi
+  local keyid
+  export GNUPGHOME="$(mktemp -d)"; chmod 700 "$GNUPGHOME"
+  printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+  keyid="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')"
+  gpg --batch --yes --default-key "$keyid" -abs -o Release.gpg Release
+  gpg --batch --yes --default-key "$keyid" --clearsign -o InRelease Release
+  gpg --batch --yes --export "$keyid" > yummy-repo.gpg
+  gpg --batch --yes --armor --export "$keyid" > yummy-repo.asc
+  echo "Repo ditandatangani dengan kunci $keyid"
+}
+
 main() {
   mkdir -p "$WORK/dl" "$OUT"
   : > "$WORK/report.txt"
@@ -111,6 +128,7 @@ main() {
     -o APT::FTPArchive::Release::Architectures=aarch64 \
     release . > ../Release.tmp
   mv ../Release.tmp Release
+  sign_repo
   cat > index.html <<HTML
 <!doctype html><meta charset=utf-8><title>Yummy repo</title>
 <p>Tambahkan ke sources.list:</p>
