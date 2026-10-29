@@ -5,12 +5,12 @@ set -euo pipefail
 
 OLD="com.termux"
 NEW="com.yummy"   # harus 1 karakter lebih pendek dari OLD (untuk patch binary)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-$PWD/work}"
 SITE="${SITE:-$PWD/site}"
 OUT="$SITE/debs"
 
 repack() {
-#  local deb="$1" name d f t n
   local deb="$1" name d f t n cf tmp line
   name="$(basename "$deb" .deb)"
   d="$WORK/x/$name"
@@ -40,9 +40,11 @@ repack() {
     else
       LC_ALL=C perl -0777 -pi -e 's|/data/data/com\.termux|/data/data/com.yummy/|g' "$f"
     fi
+    # file phar (mis. composer) punya tanda tangan hash: hitung ulang setelah patch
+    python3 "$SCRIPT_DIR/fix_phar.py" "$f"
   done < <(grep -rlaFZ "/data/data/$OLD" "$d" || true)
 
-    # 3b) conffiles: buang entri yang filenya tidak ada di pohon (dpkg-deb menolaknya)
+  # 3b) conffiles: buang entri yang filenya tidak ada di pohon (dpkg-deb menolaknya)
   cf="$d/DEBIAN/conffiles"
   if [ -f "$cf" ]; then
     tmp="$cf.new"; : > "$tmp"
@@ -60,6 +62,7 @@ repack() {
     mv "$tmp" "$cf"
     if [ ! -s "$cf" ]; then rm -f "$cf"; fi
   fi
+
   # 4) md5sums harus dihitung ulang
   if [ -f "$d/DEBIAN/md5sums" ]; then
     ( cd "$d" && find . -path ./DEBIAN -prune -o -type f -print0 \
@@ -73,7 +76,7 @@ repack() {
   grep -rIn "$OLD" "$d" 2>/dev/null | grep -v "$OLD\." | head -3 \
     | sed "s|^$d/||" >> "$WORK/report.txt" || true
 
-    # 6) izin script maintainer harus 0555-0775 (paket Termux memakai 700)
+  # 6) izin script maintainer harus 0555-0775 (paket Termux memakai 700)
   chmod 0755 "$d" "$d/DEBIAN"
   for s in preinst postinst prerm postrm config; do
     if [ -f "$d/DEBIAN/$s" ]; then chmod 0755 "$d/DEBIAN/$s"; fi
@@ -119,3 +122,4 @@ HTML
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"
 fi
+
