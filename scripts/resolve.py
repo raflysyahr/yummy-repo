@@ -1,150 +1,124 @@
-#!/usr/bin/env python3
-"""Cari paket di indeks resmi Termux + dependensinya.
-Output (stdout): "<nama> <url .deb>" satu baris per paket. Peringatan ke stderr."""
-import gzip
-import re
-import subprocess
-import sys
-import urllib.request
+#!/usr/bin/env bash
+# Repack paket resmi Termux (com.termux) agar cocok dengan prefix com.yummy,
+# lalu buat repo apt "flat" di folder site/.
+set -euo pipefail
 
-MIRROR = "https://packages.termux.dev/apt/termux-main"
-INDEX = MIRROR + "/dists/stable/main/binary-aarch64/Packages"
+OLD="com.termux"
+NEW="com.yummy"   # harus 1 karakter lebih pendek dari OLD (untuk patch binary)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK="${WORK:-$PWD/work}"
+SITE="${SITE:-$PWD/site}"
+OUT="$SITE/debs"
 
+repack() {
+  local deb="$1" name d f t n cf tmp line
+  name="$(basename "$deb" .deb)"
+  d="$WORK/x/$name"
+  rm -rf "$d"; mkdir -p "$d"
+  dpkg-deb -R "$deb" "$d"
 
-def warn(msg):
-    print("[!] " + msg, file=sys.stderr)
+  # 1) pindahkan folder data/data/com.termux -> com.yummy
+  if [ -d "$d/data/data/$OLD" ]; then
+    mv "$d/data/data/$OLD" "$d/data/data/$NEW"
+  fi
 
+  # 2) symlink absolut yang menunjuk ke prefix lama
+  while IFS= read -r -d '' f; do
+    t="$(readlink "$f")"
+    case "$t" in
+      *"/data/data/$OLD"*)
+        n="$(printf '%s' "$t" | sed "s|/data/data/$OLD|/data/data/$NEW|g")"
+        ln -sfn "$n" "$f" ;;
+    esac
+  done < <(find "$d" -type l -print0)
 
-def fetch(url):
-    with urllib.request.urlopen(url, timeout=120) as r:
-        return r.read()
+  # 3) isi file: teks diganti biasa, binary diganti dengan panjang SAMA
+  #    (/data/data/com.termux -> /data/data/com.yummy/ ; slash ganda tetap valid)
+  while IFS= read -r -d '' f; do
+    if grep -qI . "$f" 2>/dev/null; then
+      sed -i "s|/data/data/$OLD|/data/data/$NEW|g" "$f"
+    else
+      LC_ALL=C perl -0777 -pi -e 's|/data/data/com\.termux|/data/data/com.yummy/|g' "$f"
+    fi
+    # file phar (mis. composer) punya tanda tangan hash: hitung ulang setelah patch
+    python3 "$SCRIPT_DIR/fix_phar.py" "$f"
+  done < <(grep -rlaFZ "/data/data/$OLD" "$d" || true)
 
+  # 3b) conffiles: buang entri yang filenya tidak ada di pohon (dpkg-deb menolaknya)
+  cf="$d/DEBIAN/conffiles"
+  if [ -f "$cf" ]; then
+    tmp="$cf.new"; : > "$tmp"
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -z "$line" ]; then continue; fi
+      if [ -e "$d$line" ] || [ -L "$d$line" ]; then
+        printf '%s\n' "$line" >> "$tmp"
+      else
+        {
+          echo "[conffile dibuang] $name: $line"
+          dpkg-deb -c "$deb" | grep -F "$(basename "$(dirname "$line")")/$(basename "$line")" | head -3
+        } >> "$WORK/report.txt" || true
+      fi
+    done < "$cf"
+    mv "$tmp" "$cf"
+    if [ ! -s "$cf" ]; then rm -f "$cf"; fi
+  fi
 
-def load_index():
-    import os
-    if os.environ.get("INDEX_FILE"):
-        with open(os.environ["INDEX_FILE"]) as fh:
-            return fh.read()
-    try:
-        return fetch(INDEX).decode("utf-8")
-    except Exception as e:  # coba versi .gz
-        warn("Packages polos gagal (%s), coba .gz" % e)
-        return gzip.decompress(fetch(INDEX + ".gz")).decode("utf-8")
+  # 4) md5sums harus dihitung ulang
+  if [ -f "$d/DEBIAN/md5sums" ]; then
+    ( cd "$d" && find . -path ./DEBIAN -prune -o -type f -print0 \
+        | sort -z | xargs -0 -r md5sum | sed 's| \./| |' ) > "$d/DEBIAN/md5sums"
+  fi
 
+  # 5) laporan sisa string lama
+  if grep -rlaF "/data/data/$OLD" "$d" >/dev/null 2>&1; then
+    echo "[!] masih ada /data/data/$OLD di $name" >> "$WORK/report.txt"
+  fi
+  grep -rIn "$OLD" "$d" 2>/dev/null | grep -v "$OLD\." | head -3 \
+    | sed "s|^$d/||" >> "$WORK/report.txt" || true
 
-def version_gt(a, b):
-    return subprocess.run(["dpkg", "--compare-versions", a, "gt", b]).returncode == 0
+  # 6) izin script maintainer harus 0555-0775 (paket Termux memakai 700)
+  chmod 0755 "$d" "$d/DEBIAN"
+  for s in preinst postinst prerm postrm config; do
+    if [ -f "$d/DEBIAN/$s" ]; then chmod 0755 "$d/DEBIAN/$s"; fi
+  done
 
+  # 7) bangun ulang .deb
+  mkdir -p "$OUT"
+  dpkg-deb --root-owner-group -Zxz -b "$d" "$OUT/$(basename "$deb")" >/dev/null
+  rm -rf "$d"
+}
 
-def parse(text):
-    pkgs = {}
-    for block in text.split("\n\n"):
-        f, key = {}, None
-        for line in block.splitlines():
-            if not line.strip():
-                continue
-            if line[0] in " \t":
-                if key:
-                    f[key] += "\n" + line
-            else:
-                k, _, v = line.partition(":")
-                key = k.strip()
-                f[key] = v.strip()
-        name = f.get("Package")
-        if not name:
-            continue
-        old = pkgs.get(name)
-        if old is None or version_gt(f.get("Version", "0"), old.get("Version", "0")):
-            pkgs[name] = f
-    return pkgs
+main() {
+  mkdir -p "$WORK/dl" "$OUT"
+  : > "$WORK/report.txt"
+  python3 scripts/resolve.py > "$WORK/list.txt"
 
+  while read -r name url; do
+    echo "==> $name"
+    f="$WORK/dl/$(basename "$url")"
+    curl -fsSL --retry 5 --retry-delay 3 -o "$f" "$url"
+    repack "$f"
+    rm -f "$f"
+  done < "$WORK/list.txt"
 
-def read_list(path):
-    out = []
-    try:
-        with open(path) as fh:
-            for line in fh:
-                line = line.split("#", 1)[0].strip()
-                if line:
-                    out.append(line)
-    except FileNotFoundError:
-        warn("file %s tidak ada" % path)
-    return out
+  # --- indeks repo apt (flat) ---
+  cd "$SITE"
+  apt-ftparchive packages debs > Packages
+  gzip -9kf Packages
+  apt-ftparchive \
+    -o APT::FTPArchive::Release::Origin=Yummy \
+    -o APT::FTPArchive::Release::Label=Yummy \
+    -o APT::FTPArchive::Release::Architectures=aarch64 \
+    release . > ../Release.tmp
+  mv ../Release.tmp Release
+  cat > index.html <<HTML
+<!doctype html><meta charset=utf-8><title>Yummy repo</title>
+<p>Tambahkan ke sources.list:</p>
+<pre>deb [trusted=yes] https://raflysyahr.github.io/yummy-repo/ ./</pre>
+HTML
+  echo "Selesai: $(ls debs | wc -l) paket."
+}
 
-
-def dep_groups(f):
-    groups = []
-    for fld in ("Pre-Depends", "Depends"):
-        for part in f.get(fld, "").split(","):
-            alts = [re.sub(r"\(.*?\)|:\w+", "", a).strip() for a in part.split("|")]
-            alts = [a for a in alts if a]
-            if alts:
-                groups.append(alts)
-    return groups
-
-
-def main():
-    pkgs = parse(load_index())
-    provides = {}
-    for name, f in pkgs.items():
-        for p in f.get("Provides", "").split(","):
-            p = re.sub(r"\(.*?\)", "", p).strip()
-            if p:
-                provides.setdefault(p, name)
-
-    def real_name0(n):
-        if n in pkgs:
-            return n
-        return provides.get(n)
-
-    # Semua paket bootstrap + dependensinya otomatis dikecualikan
-    exclude = set(read_list("exclude.txt"))
-    bq = list(read_list("bootstrap-packages.txt"))
-    while bq:
-        n = bq.pop(0)
-        r = real_name0(n)
-        if r is None or r in exclude:
-            continue
-        exclude.add(r)
-        for alts in dep_groups(pkgs[r]):
-            for a in alts:
-                if real_name0(a):
-                    bq.append(a)
-                    break
-    warn("paket bootstrap yang dikecualikan: %d" % len(exclude))
-    queue = list(read_list("packages.txt"))
-    seen, result = set(), []
-
-    def real_name(n):
-        if n in pkgs:
-            return n
-        return provides.get(n)
-
-    while queue:
-        n = queue.pop(0)
-        real = real_name(n)
-        if real is None:
-            warn("paket tidak ditemukan di indeks: " + n)
-            continue
-        if real in seen or real in exclude:
-            continue
-        seen.add(real)
-        f = pkgs[real]
-        result.append((real, MIRROR + "/" + f["Filename"]))
-        for alts in dep_groups(f):
-            if any(a in exclude or real_name(a) in exclude for a in alts):
-                continue  # sudah dipenuhi bootstrap
-            for a in alts:
-                if real_name(a):
-                    queue.append(a)
-                    break
-            else:
-                warn("dependensi tak terselesaikan %s -> %s" % (real, "|".join(alts)))
-
-    for name, url in result:
-        print(name, url)
-    warn("total paket yang akan direpack: %d" % len(result))
-
-
-if __name__ == "__main__":
-    main()
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
