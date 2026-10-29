@@ -1,0 +1,13 @@
+# Paket yang SUDAH ada di bootstrap Yummy dan tidak boleh ditimpa repack.
+# Cara mengisi dengan akurat: di terminal Yummy jalankan
+#   dpkg-query -W -f='${Package}\n'
+# lalu tempel hasilnya di sini (ganti isi bawah).
+apt
+dpkg
+bash
+termux-tools
+termux-exec
+termux-core
+termux-am
+termux-am-socket
+termux-keyring

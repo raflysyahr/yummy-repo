@@ -1,0 +1,14 @@
+# Paket utama yang ingin tersedia di Yummy (satu nama per baris).
+# Dependensinya dicari otomatis oleh scripts/resolve.py.
+git
+openssh
+ripgrep
+fd
+jq
+nodejs-lts
+python
+python-pip
+php
+composer
+shellcheck
+shfmt
