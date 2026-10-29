@@ -54,7 +54,13 @@ repack() {
   grep -rIn "$OLD" "$d" 2>/dev/null | grep -v "$OLD\." | head -3 \
     | sed "s|^$d/||" >> "$WORK/report.txt" || true
 
-  # 6) bangun ulang .deb
+    # 6) izin script maintainer harus 0555-0775 (paket Termux memakai 700)
+  chmod 0755 "$d" "$d/DEBIAN"
+  for s in preinst postinst prerm postrm config; do
+    if [ -f "$d/DEBIAN/$s" ]; then chmod 0755 "$d/DEBIAN/$s"; fi
+  done
+
+  # 7) bangun ulang .deb
   mkdir -p "$OUT"
   dpkg-deb --root-owner-group -Zxz -b "$d" "$OUT/$(basename "$deb")" >/dev/null
   rm -rf "$d"
